@@ -4,6 +4,9 @@ from tkinter import filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk
 import re
 import os
+import fitz  # PyMuPDF
+import cv2
+import numpy as np
 
 class PDFMergerApp:
     def __init__(self):
@@ -14,7 +17,7 @@ class PDFMergerApp:
 
         self.window = tk.Tk()
         self.window.title("PDF Merger")
-        self.window.geometry('500x750')
+        self.window.geometry('500x800')
         self.window.configure(bg="#ffffff")
 
         self.header_frame = tk.Frame(self.window, bg="#ffcc00", height=100)
@@ -48,6 +51,16 @@ class PDFMergerApp:
 
         self.page_deletion_entry = tk.Entry(background_frame, width=80, font=("Arial", 10))
         self.page_deletion_entry.pack(pady=5)
+
+        self.remove_blank_pages_var = tk.BooleanVar()
+        self.remove_blank_pages_checkbox = tk.Checkbutton(
+            background_frame, 
+            text="Remove Blank Pages", 
+            variable=self.remove_blank_pages_var, 
+            bg="#ffffff", 
+            font=("Arial", 10)
+        )
+        self.remove_blank_pages_checkbox.pack(pady=5)
 
         self.move_up_button = tk.Button(background_frame, bg="#d40511", fg="#ffffff", text="⬆️    Move Up", command=self.move_up, relief="flat", borderwidth=0, font=("Arial", 10, "bold"), padx=10, pady=5, cursor="hand2", width=20)
         self.move_up_button.pack(pady=5)
@@ -138,61 +151,64 @@ class PDFMergerApp:
         
         return page_deletions
 
-    def merge_pdfs(self, pdf_list, output_path):
-        """ Merge PDFs with optional page deletion and problematic page removal """
-        pdf_merger = PyPDF2.PdfMerger()
+    def is_blank_page(self, page):
+        """
+        Check if a PDF page is blank using image processing.
+        
+        :param page: PyMuPDF page object
+        :return: Boolean indicating if the page is blank
+        """
+        # Convert PDF page to an image
+        pix = page.get_pixmap()
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Apply a threshold to get a binary image
+        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+        
+        # Check the percentage of white pixels
+        white_pixels = np.sum(thresh == 255)
+        total_pixels = thresh.size
+        white_ratio = white_pixels / total_pixels
+        
+        return white_ratio > 0.97
 
+    def merge_pdfs(self, pdf_list, output_path):
+        """ 
+        Merge PDFs with optional page deletion and blank page removal 
+        """
         # Get page deletion formula
         page_deletions = self.parse_page_deletion_formula(
             self.page_deletion_entry.get()
         )
 
-        for index, pdf in enumerate(pdf_list):
+        # Open the output document
+        output_doc = fitz.open()
+
+        for index, pdf_path in enumerate(pdf_list):
             # Open the PDF
-            pdf_reader = PyPDF2.PdfReader(open(pdf, 'rb'))
+            pdf_reader = PyPDF2.PdfReader(open(pdf_path, 'rb'))
             
-            if index in page_deletions:
-                pages_to_keep = [
-                    page for page in range(len(pdf_reader.pages)) 
-                    if page not in page_deletions[index]
-                ]
+            for page_num, page in enumerate(pdf_reader.pages):
+                # Skip pages if specified in deletion formula
+                if index in page_deletions and page_num in page_deletions[index]:
+                    continue
                 
-                for page_num in pages_to_keep:
-                    pdf_merger.append(fileobj=pdf_reader, pages=(page_num, page_num+1))
-            else:
-                pdf_merger.append(pdf)
-
-        # Write the merged PDF
-        with open(output_path, 'wb') as output_file:
-            pdf_merger.write(output_file)
-
-        # Clean up problematic pages
-        self.remove_problematic_pages(output_path)
-
-    def remove_problematic_pages(self, pdf_path):
-        """ Remove pages starting with 'Could not convert the document ending with the document id' """
-        with open(pdf_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            pdf_writer = PyPDF2.PdfWriter()
-
-            # Track deletion for UI feedback
-            deleted_pages = []
-
-            # Add only pages that do not start with the problematic text
-            for page_num, page in enumerate(pdf_reader.pages, 1):
-                text = page.extract_text().split('\n')[0] if page.extract_text() else ''
-                if not text.startswith('Could not convert the document ending with the document id'):
-                    pdf_writer.add_page(page)
-                else:
-                    deleted_pages.append(page_num)
-
-            # Overwrite the original file if any problematic pages were found
-            if deleted_pages:
-                with open(pdf_path, 'wb') as output_file:
-                    pdf_writer.write(output_file)
+                # Convert PyPDF2 page to PyMuPDF
+                temp_pdf = fitz.open()
+                temp_pdf.insert_pdf(fitz.open(pdf_path), from_page=page_num, to_page=page_num)
                 
-                # Optional: Show feedback about deleted pages
-                messagebox.showinfo("Page Removal", f"Removed {len(deleted_pages)} problematic pages: {deleted_pages}")
+                # If blank page removal is on, check the page
+                if not self.remove_blank_pages_var.get() or not self.is_blank_page(temp_pdf[0]):
+                    output_doc.insert_pdf(temp_pdf, from_page=0, to_page=0)
+                
+                temp_pdf.close()
+
+        # Save the merged PDF
+        output_doc.save(output_path)
+        output_doc.close()
 
     def choose_pdf_file(self):
         file_paths = filedialog.askopenfilenames(
