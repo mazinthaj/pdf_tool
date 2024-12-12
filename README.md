@@ -1,5 +1,6 @@
 # pdf_tool
 A tool for merging and deleting pages of pdfs
 
-remove the function and its call: remove_problematic_pages() if you want to use it.
-This function is tailored for the user to delete the some pages that starts with "Could not convert the document ending with the document id"
+When the "Remove Blank Pages" is checked, it removes pages that are above 97% empty. You can modify this in the code (white_ratio > 0.97)
+![image](https://github.com/user-attachments/assets/75ff19b0-daca-41aa-b284-b01680144ab0)
+
